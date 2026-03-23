@@ -1,0 +1,266 @@
+##########################
+#  global proxy network  #
+##########################
+networks:
+  proxy:
+    name: proxy
+    driver: bridge
+    attachable: true
+
+##########################
+#  persistent volumes    #
+##########################
+volumes:
+  traefik_letsencrypt:
+  traefik_dynamic:
+  authelia_config:
+  portainer_data:
+
+##########################
+#        services        #
+##########################
+services:
+
+  #####################################
+  #  Init – writes config files then  #
+  #  exits. Runs once on first boot.  #
+  #####################################
+  init-config:
+    image: authelia/authelia:latest
+    container_name: init-config
+    restart: "no"
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    volumes:
+      - traefik_dynamic:/out/traefik
+      - authelia_config:/out/authelia
+    environment:
+      - DOMAIN=${DOMAIN}
+      - HOMELAB_TAILSCALE_IP=${HOMELAB_TAILSCALE_IP}
+      - AUTHELIA_SESSION_SECRET=${AUTHELIA_SESSION_SECRET}
+      - AUTHELIA_STORAGE_KEY=${AUTHELIA_STORAGE_KEY}
+      - AUTHELIA_JWT_SECRET=${AUTHELIA_JWT_SECRET}
+      - AUTHELIA_USER_PASSWORD=${AUTHELIA_USER_PASSWORD}
+      - AUTHELIA_USER_EMAIL=${AUTHELIA_USER_EMAIL}
+      - AUTHELIA_USER_DISPLAYNAME=${AUTHELIA_USER_DISPLAYNAME}
+      - AUTHELIA_USERNAME=${AUTHELIA_USERNAME}
+      - TZ=${TZ}
+    command:
+      - |
+        set -e
+
+        # ─── Secret files (Authelia reads these via _FILE env vars) ───
+        if [ ! -f /out/authelia/JWT_SECRET ]; then
+          echo ">>> Writing secret files into config volume"
+          printf '%s' "${AUTHELIA_JWT_SECRET}" > /out/authelia/JWT_SECRET
+          printf '%s' "${AUTHELIA_SESSION_SECRET}" > /out/authelia/SESSION_SECRET
+          printf '%s' "${AUTHELIA_STORAGE_KEY}" > /out/authelia/STORAGE_ENCRYPTION_KEY
+        else
+          echo ">>> Secret files already exist, skipping"
+        fi
+
+        # ─── Traefik dynamic config: homelab forwarding ───
+        if [ ! -f /out/traefik/homelab.yml ]; then
+          echo ">>> Writing traefik/dynamic/homelab.yml"
+          cat > /out/traefik/homelab.yml <<EOF
+        http:
+          services:
+            homelab:
+              loadBalancer:
+                passHostHeader: true
+                servers:
+                  - url: "http://${HOMELAB_TAILSCALE_IP}:80"
+
+          routers:
+            homelab-jellyfin:
+              rule: "Host(\`jellyfin.${DOMAIN}\`)"
+              entrypoints: [websecure]
+              service: homelab
+              middlewares: [authelia@docker]
+              tls:
+                certResolver: le
+
+            homelab-nextcloud:
+              rule: "Host(\`nextcloud.${DOMAIN}\`)"
+              entrypoints: [websecure]
+              service: homelab
+              middlewares: [authelia@docker]
+              tls:
+                certResolver: le
+        EOF
+        else
+          echo ">>> traefik/dynamic/homelab.yml already exists, skipping"
+        fi
+
+        # ─── Authelia main configuration (NO secrets here) ───
+        if [ ! -f /out/authelia/configuration.yml ]; then
+          echo ">>> Writing authelia/config/configuration.yml"
+          cat > /out/authelia/configuration.yml <<EOF
+        ---
+        theme: dark
+        default_2fa_method: totp
+
+        server:
+          address: "tcp://0.0.0.0:9091"
+
+        log:
+          level: info
+
+        authentication_backend:
+          file:
+            path: /config/users_database.yml
+            password:
+              algorithm: argon2id
+
+        access_control:
+          default_policy: deny
+          rules:
+            - domain: auth.${DOMAIN}
+              policy: bypass
+            - domain:
+                - traefik.${DOMAIN}
+              policy: two_factor
+              subject: ["group:admins"]
+            - domain: "*.${DOMAIN}"
+              policy: two_factor
+              subject: ["group:users"]
+
+        session:
+          name: authelia_session
+          cookies:
+            - domain: ${DOMAIN}
+              authelia_url: https://auth.${DOMAIN}
+              default_redirection_url: https://${DOMAIN}
+              expiration: 12h
+              inactivity: 45m
+
+        storage:
+          local:
+            path: /config/db.sqlite3
+
+        notifier:
+          filesystem:
+            filename: /config/notification.txt
+
+        totp:
+          issuer: ${DOMAIN}
+          period: 30
+          skew: 1
+        EOF
+        else
+          echo ">>> authelia/config/configuration.yml already exists, skipping"
+        fi
+
+        # ─── Authelia users database (hash generated inside container) ───
+        if [ ! -f /out/authelia/users_database.yml ]; then
+          echo ">>> Generating password hash and writing users_database.yml"
+          # Generate hash and write it DIRECTLY to a temp file (no shell variable)
+          authelia crypto hash generate argon2 \
+            --password "${AUTHELIA_USER_PASSWORD}" \
+            -- 2>/dev/null > /tmp/hash.txt
+
+          # Build the YAML file piece by piece
+          echo "users:"                                          > /out/authelia/users_database.yml
+          echo "  ${AUTHELIA_USERNAME}:"                         >> /out/authelia/users_database.yml
+          echo "    displayname: \"${AUTHELIA_USER_DISPLAYNAME}\"" >> /out/authelia/users_database.yml
+
+          # Insert hash from file using sed — never touches a shell variable
+          printf '    password: "'                               >> /out/authelia/users_database.yml
+          sed 's/^Digest: //' /tmp/hash.txt | tr -d '\n'       >> /out/authelia/users_database.yml
+          echo '"'                                               >> /out/authelia/users_database.yml
+
+          echo "    email: ${AUTHELIA_USER_EMAIL}"               >> /out/authelia/users_database.yml
+          echo "    groups:"                                     >> /out/authelia/users_database.yml
+          echo "      - admins"                                  >> /out/authelia/users_database.yml
+          echo "      - users"                                   >> /out/authelia/users_database.yml
+
+          rm -f /tmp/hash.txt
+        else
+          echo ">>> users_database.yml already exists, skipping"
+        fi
+
+  #####################################
+  #  Traefik – single edge proxy      #
+  #####################################
+  traefik:
+    image: traefik:v3.6.9
+    container_name: traefik
+    restart: unless-stopped
+    networks: [proxy]
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+
+    ports:
+      - "80:80"
+      - "443:443"
+      - "25565:25565" # <-- Minecraft server
+
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.wireguard.address=:51820/udp
+      - --entrypoints.minecraft.address=:25565/tcp
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --api.dashboard=true
+      - --serversTransport.forwardingTimeouts.dialTimeout=30s
+      - --serversTransport.forwardingTimeouts.responseHeaderTimeout=0s
+      - --serversTransport.forwardingTimeouts.idleConnTimeout=90s
+      - --entrypoints.web.transport.respondingTimeouts.readTimeout=0s
+      - --entrypoints.web.transport.respondingTimeouts.writeTimeout=0s
+      - --entrypoints.web.transport.respondingTimeouts.idleTimeout=180s
+      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=0s
+      - --entrypoints.websecure.transport.respondingTimeouts.writeTimeout=0s
+      - --entrypoints.websecure.transport.respondingTimeouts.idleTimeout=180s
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+      - traefik_dynamic:/etc/traefik/dynamic:ro
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`)
+      - traefik.http.routers.traefik.entrypoints=websecure
+      - traefik.http.routers.traefik.tls.certresolver=le
+      - traefik.http.routers.traefik.service=api@internal
+      - traefik.http.routers.traefik.middlewares=authelia@docker
+
+  #####################################
+  #  Authelia – SSO / 2FA gateway     #
+  #####################################
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia
+    restart: unless-stopped
+    networks: [proxy]
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+
+    volumes:
+      - authelia_config:/config
+
+    environment:
+      TZ: ${TZ}
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /config/JWT_SECRET
+      AUTHELIA_SESSION_SECRET_FILE: /config/SESSION_SECRET
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /config/STORAGE_ENCRYPTION_KEY
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.authelia.rule=Host(`auth.${DOMAIN}`)
+      - traefik.http.routers.authelia.entrypoints=websecure
+      - traefik.http.routers.authelia.tls.certresolver=le
+      - traefik.http.services.authelia.loadbalancer.server.port=9091
+      - traefik.http.middlewares.authelia.forwardauth.address=http://authelia:9091/api/authz/forward-auth
+      - traefik.http.middlewares.authelia.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.authelia.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Name,Remote-Email

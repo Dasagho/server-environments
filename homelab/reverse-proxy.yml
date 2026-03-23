@@ -1,0 +1,39 @@
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: traefik
+    restart: unless-stopped
+
+    command:
+      - --log.level=INFO
+      - --api.dashboard=true
+      - --entrypoints.web.address=:80
+      - --providers.docker=true
+      - --providers.docker.exposedByDefault=false
+
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+
+    ports:
+      - "80:80"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic
+
+    networks:
+      - proxy
+
+    labels:
+      - traefik.enable=true
+
+      # Dashboard route (needs /api and /dashboard)
+      - traefik.http.routers.traefik.rule=Host(`traefik.home.arpa`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))
+      - traefik.http.routers.traefik.entrypoints=web
+      - traefik.http.routers.traefik.service=api@internal
+      - traefik.http.routers.traefik.middlewares=dashboard-auth@docker
+      - traefik.http.middlewares.dashboard-auth.basicauth.users=admin:$$apr1$$qmzlwA1s$$Hi5tMvjfNlq4kVCUkyL1R1
+
+networks:
+  proxy:
+    external: true

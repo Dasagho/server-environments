@@ -1,0 +1,273 @@
+services:
+  rdtclient:
+    image: rogerfar/rdtclient:latest
+    container_name: rdtclient
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+    volumes:
+      - ./rdtclient/config:/data/db
+      - ${NAS_BASE}/downloads:/data/downloads
+    networks:
+      - proxy
+    ports:
+      - "6500:6500"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.rdtclient.rule=Host(`debrid.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.rdtclient.entrypoints=web
+      - traefik.http.services.rdtclient.loadbalancer.server.port=6500
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6500"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      PUID:  ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+    volumes:
+      - ./prowlarr/config:/config
+    networks:
+      - proxy
+    ports:
+      - "9696:9696"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prowlarr.rule=Host(`prowlarr.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.prowlarr.entrypoints=web
+      - traefik.http.services.prowlarr.loadbalancer.server.port=9696
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9696/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+      AUTO_UPDATE: true
+    volumes:
+      - ./jackett/config:/config
+    networks:
+      - proxy
+    ports:
+      - "9117:9117"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.jackett.rule=Host(`jackett.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.jackett.entrypoints=web
+      - traefik.http.services.jackett.loadbalancer.server.port=9117
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9117/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      PUID:  ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+    volumes:
+      - ./jellyfin/config:/config
+      - ./jellyfin/cache:/cache
+      - ${NAS_BASE}/media/movies:/data/movies:ro
+      - ${NAS_BASE}/media/tv:/data/tv:ro
+      - ${NAS_BASE}/media/anime:/data/anime:ro
+    networks:
+      - proxy
+    ports:
+      - "8096:8096"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.jellyfin.rule=Host(`jellyfin.${LOCAL_DOMAIN}`) # || Host(`jellyfin.${PUBLIC_DOMAIN}`)
+      - traefik.http.routers.jellyfin.entrypoints=web
+      - traefik.http.services.jellyfin.loadbalancer.server.port=8096
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  jellyseerr:
+    image:  fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ./jellyseerr/config:/app/config
+    networks:
+      - proxy
+    ports:
+      - "5055:5055"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.jellyseerr.rule=Host(`requests.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.jellyseerr.entrypoints=web
+      - traefik.http.services.jellyseerr.loadbalancer.server.port=5055
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5055/api/v1/status"]
+      interval:  30s
+      timeout: 10s
+      retries: 3
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name:  sonarr
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+    volumes:
+      - ./sonarr/config:/config
+      - ${NAS_BASE}/media:/data
+      - ${NAS_BASE}/downloads:/data/downloads
+    networks:
+      - proxy
+    ports:
+      - "8989:8989"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sonarr.rule=Host(`sonarr.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.sonarr.entrypoints=web
+      - traefik.http.services.sonarr.loadbalancer.server.port=8989
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8989/ping"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart:  unless-stopped
+    environment:
+      PUID: ${PUID}
+      PGID:  ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+    volumes:
+      - ./radarr/config:/config
+      - ${NAS_BASE}/media:/data
+      - ${NAS_BASE}/downloads:/data/downloads
+    networks:
+      - proxy
+    ports:
+      - "7878:7878"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.radarr.rule=Host(`radarr.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.radarr.entrypoints=web
+      - traefik.http.services.radarr.loadbalancer.server.port=7878
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7878/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    restart: unless-stopped
+    environment:
+      PUID:  ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+    volumes:
+      - ./bazarr/config:/config
+      - ${NAS_BASE}/media/movies:/data/movies
+      - ${NAS_BASE}/media/tv:/data/tv
+    networks:
+      - proxy
+    ports:
+      - "6767:6767"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.bazarr.rule=Host(`bazarr.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.bazarr.entrypoints=web
+      - traefik.http.services.bazarr.loadbalancer.server.port=6767
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6767/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+    volumes:
+      - ./lidarr/config:/config
+      - ${NAS_BASE}/media:/data
+      - ${NAS_BASE}/downloads:/data/downloads
+    networks:
+      - proxy
+    ports:
+      - "8686:8686"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.lidarr.rule=Host(`lidarr.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.lidarr.entrypoints=web
+      - traefik.http.services.lidarr.loadbalancer.server.port=8686
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8686/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8080
+    volumes:
+      - ${NAS_BASE}/config:/config
+      - ${NAS_BASE}/downloads:/downloads
+    networks:
+      - proxy
+    ports:
+      - 8082:8080
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.torrent.rule=Host(`qbittorrent.${LOCAL_DOMAIN}`)
+      - traefik.http.routers.torrent.entrypoints=web
+      - traefik.http.services.torrent.loadbalancer.server.port=8080
+
+networks:
+  proxy:
+    name: proxy
+    external: true
