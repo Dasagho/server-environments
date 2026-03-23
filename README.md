@@ -91,7 +91,6 @@ routers:
     rule: "Host(`jellyfin.yourdomain.com`)"
     entrypoints: [websecure]
     service: homelab
-    middlewares: [authelia@docker]
     tls:
       certResolver: le
 ```
