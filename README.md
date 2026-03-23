@@ -117,29 +117,35 @@ services:
 
 **Step 4 — Homelab Traefik routes by the same Host header**
 
-The homelab Traefik has a router (declared via Docker labels on the Jellyfin container) that matches exactly the same hostname:
+The homelab Traefik has a router (declared via Docker labels on the Jellyfin container) that matches the hostname. To allow both public access (traffic forwarded by the VPS carrying `jellyfin.yourdomain.com`) and direct LAN access (using a local domain like `jellyfin.home.arpa`), use the `||` operator to match either host:
 
 ```yaml
 # content-manager.yml label on the jellyfin service
-traefik.http.routers.jellyfin.rule=Host(`jellyfin.${LOCAL_DOMAIN}`)
+traefik.http.routers.jellyfin.rule=Host(`jellyfin.${LOCAL_DOMAIN}`) || Host(`jellyfin.yourdomain.com`)
 ```
 
-Because `LOCAL_DOMAIN` on the homelab **must equal** `yourdomain.com` (the public domain), the rule `Host('jellyfin.yourdomain.com')` matches the forwarded header and the request is delivered to the Jellyfin container.
+This way the homelab Traefik accepts requests from both paths: the public hostname forwarded through the VPS tunnel, and the local hostname used for direct LAN access. `LOCAL_DOMAIN` can be set to your internal domain (e.g. `home.arpa`) independently of the public domain.
 
 **Step 5 — Response travels back the same chain**
 
 The response flows back: Jellyfin → homelab Traefik → Tailscale tunnel → VPS Traefik → browser. TLS is terminated at the VPS Traefik only; all internal hops are plain HTTP.
 
-### Why `LOCAL_DOMAIN` must match the public domain
+### Why the homelab router rule must match the forwarded Host header
 
-The homelab Traefik is completely unaware of the VPS. It simply sees an incoming HTTP request with a `Host` header and matches it against its own routing rules. If `LOCAL_DOMAIN=home.arpa` but the public domain is `yourdomain.com`, the headers would never match and homelab Traefik would return a 404.
+The homelab Traefik is completely unaware of the VPS. It simply sees an incoming HTTP request with a `Host` header and matches it against its own routing rules. If the router rule only covers `jellyfin.home.arpa` but the VPS forwards traffic with `Host: jellyfin.yourdomain.com`, homelab Traefik would return a 404.
 
-For Jellyfin and Nextcloud to be reachable from both the internet (via VPS) and the LAN (directly), set:
+The solution is to use the `||` operator in the Traefik label to match **both** the local hostname and the public hostname:
 
+```yaml
+# in content-manager.yml, on the jellyfin service
+traefik.http.routers.jellyfin.rule=Host(`jellyfin.${LOCAL_DOMAIN}`) || Host(`jellyfin.yourdomain.com`)
 ```
-# homelab/content-manager.env and homelab/nextcloud.env
-LOCAL_DOMAIN=yourdomain.com
-```
+
+This means:
+- **Local access** (`jellyfin.home.arpa`) hits homelab Traefik directly and matches the first condition.
+- **Public access** (`jellyfin.yourdomain.com`) arrives through the VPS tunnel and matches the second condition.
+
+`LOCAL_DOMAIN` can be any internal domain (e.g. `home.arpa`) — it no longer needs to equal the public domain. The public hostname is hardcoded in the second `Host()` condition of the rule.
 
 Services that are **LAN-only** (Sonarr, Radarr, Prowlarr, etc.) have no VPS router defined, so they remain unreachable from the internet regardless — the VPS Traefik simply has no matching rule for `sonarr.yourdomain.com`.
 
@@ -164,7 +170,7 @@ Every service is routed by hostname. You need a domain where you control DNS.
 
 - Point a **wildcard A record** `*.yourdomain.com` at the VPS public IP.
 - Traefik will automatically obtain a TLS certificate for each subdomain via Let's Encrypt HTTP-01 challenge.
-- **Set `LOCAL_DOMAIN=yourdomain.com`** in both homelab env files so the homelab Traefik router rules match the public hostnames forwarded by the VPS.
+- In the homelab Traefik labels, use the `||` operator to accept both the local hostname and the public hostname: `Host(`service.${LOCAL_DOMAIN}`) || Host(`service.yourdomain.com`)`. This allows direct LAN access via `LOCAL_DOMAIN` and public access via the VPS without coupling the two domains.
 
 Subdomains in use:
 
@@ -234,6 +240,30 @@ docker network create proxy
 docker volume create nextcloud_nextcloud_db
 ```
 
+### 6. Portainer (optional, recommended)
+
+Portainer is not required, but it is strongly recommended for managing your homelab stacks. It gives you a web UI to start/stop/restart containers, inspect logs, browse volumes, and deploy new Compose stacks — all without SSHing into the machine.
+
+Deploy it on the homelab once the `proxy` network exists:
+
+```bash
+docker volume create portainer_data
+
+docker run -d \
+  --name portainer \
+  --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v portainer_data:/data \
+  --network proxy \
+  --label "traefik.enable=true" \
+  --label "traefik.http.routers.portainer.rule=Host(\`portainer.${LOCAL_DOMAIN}\`)" \
+  --label "traefik.http.routers.portainer.entrypoints=web" \
+  --label "traefik.http.services.portainer.loadbalancer.server.port=9000" \
+  portainer/portainer-ce:latest
+```
+
+Portainer is intentionally kept **LAN-only** — there is no VPS router for it, so it is never reachable from the internet. Access it at `http://portainer.yourlocaldomian` from within the LAN. Portainer ships with its own authentication, so no additional auth layer is needed.
+
 ---
 
 ## Repository layout
@@ -292,7 +322,7 @@ docker compose -f reverse-proxy.yml up -d
 
 ```bash
 cd homelab/
-# Edit content-manager.env: set TZ, LOCAL_DOMAIN (= your public domain), NAS_BASE
+# Edit content-manager.env: set TZ, LOCAL_DOMAIN (your internal domain, e.g. home.arpa), NAS_BASE
 docker compose -f content-manager.yml --env-file content-manager.env up -d
 ```
 
@@ -336,7 +366,7 @@ On first start, `nextcloud-init` waits for Nextcloud installation, then idempote
 | `PUID` | Host UID for LinuxServer containers (default `1000`) |
 | `PGID` | Host GID for LinuxServer containers (default `1000`) |
 | `UMASK` | File creation mask (default `002`) |
-| `LOCAL_DOMAIN` | **Must equal your public domain** for VPS-forwarded traffic to match homelab routers, e.g. `example.com` |
+| `LOCAL_DOMAIN` | Internal/local domain used for direct LAN access, e.g. `home.arpa`. The homelab Traefik labels use `Host(\`service.${LOCAL_DOMAIN}\`) \|\| Host(\`service.yourdomain.com\`)` to also accept traffic forwarded by the VPS. |
 | `NAS_BASE` | Absolute path to NAS mount (default `/srv/nas_media`) |
 
 ### `homelab/nextcloud.env`
@@ -363,7 +393,28 @@ On first start, `nextcloud-init` waits for Nextcloud installation, then idempote
 
 ## Access control (VPS)
 
-Authelia enforces TOTP two-factor authentication on all public subdomains:
+Authelia is a safety net for services that have **no authentication of their own**. Services like Jellyfin and Nextcloud ship with their own login system and do not need Authelia in front of them — adding it only creates an unnecessary extra prompt.
+
+| Service type | Authelia middleware? | Reason |
+|---|---|---|
+| Services **without built-in auth** (e.g. Traefik dashboard, *arr apps, qBittorrent, RDTClient) | **Yes** | Without it the service is fully open to the internet. |
+| Services **with their own auth** (Jellyfin, Nextcloud, Portainer) | **No** | These services enforce their own login; Authelia adds no security benefit here. |
+
+For Jellyfin and Nextcloud, omit the `middlewares` key entirely in their VPS router entries in `homelab.yml`:
+
+```yaml
+# vps: traefik dynamic config (homelab.yml)
+routers:
+  homelab-jellyfin:
+    rule: "Host(`jellyfin.yourdomain.com`)"
+    entrypoints: [websecure]
+    service: homelab
+    # no middlewares — Jellyfin handles auth itself
+    tls:
+      certResolver: le
+```
+
+The default Authelia access-control policy as written by `init-config`:
 
 | Domain pattern | Policy | Group required |
 |---|---|---|
