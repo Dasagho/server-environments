@@ -76,7 +76,7 @@ services:
               rule: "Host(\`jellyfin.${DOMAIN}\`)"
               entrypoints: [websecure]
               service: homelab
-              middlewares: [authelia@docker]
+              # middlewares: [authelia@docker]
               tls:
                 certResolver: le
 
@@ -84,7 +84,7 @@ services:
               rule: "Host(\`nextcloud.${DOMAIN}\`)"
               entrypoints: [websecure]
               service: homelab
-              middlewares: [authelia@docker]
+              # middlewares: [authelia@docker]
               tls:
                 certResolver: le
         EOF
